@@ -17,7 +17,6 @@ from ui.bulletin import BulletinHelper
 from ui.alert import AlertDialogBuilder
 from hook_utils import find_class, get_private_field, set_private_field
 from client_utils import get_last_fragment
-from java.util import Locale
 from android.os import Build
 from android.provider import Settings
 from org.telegram.messenger import (
@@ -26,12 +25,12 @@ from org.telegram.messenger import (
 )
 from org.telegram.tgnet import ConnectionsManager
 
-__id__ = "exitfy"
-__name__ = "exitFy"
-__description__ = "Application download speed optimization"
+__id__ = "zapretkvn"
+__name__ = "ZapretKVN"
+__description__ = "VLESS прокси для Telegram"
 __icon__ = "exitFy/0"
-__author__ = "@exteraPluginsSup"
-__version__ = "3.0.1"
+__author__ = "@zapretvpns_bot"
+__version__ = "3.0.2"
 __min_version__ = "12.1.1"
 
 VLESS_READY_WAIT_SEC = 4.0
@@ -39,47 +38,58 @@ VLESS_READY_POLL_SEC = 0.1
 ZAPRETVPNS_BOT = "tg://resolve?domain=zapretvpns_bot"
 PLUGIN_UPDATE_URL = "https://raw.githubusercontent.com/youtubediscord/telegram_vless_plugin/main/zapretKVNs.plugin"
 
-TRANSLATIONS = {
-    "settings_header":      ("Настройки плагина", "Plugin settings"),
-    "enable_plugin":        ("Включить VLESS", "Enable VLESS"),
-    "open_tg_settings":     ("Настройки прокси Telegram", "Telegram proxy settings"),
-    "menu_settings":        ("Настройки exitFy", "exitFy settings"),
-    "vless_nodes_header":   ("Узлы подключения", "Connection nodes"),
-    "vless_add_key":        ("Вставьте vless:// ключ", "Paste vless:// key"),
-    "vless_add_sub":        ("Ссылка на подписку", "Subscription URL"),
-    "vless_no_nodes":       ("Добавьте ключ или подписку", "Add a key or subscription"),
-    "vless_nodes_manage":   ("Управление узлами", "Manage nodes"),
-    "vless_nodes_update":   ("Обновить узлы", "Update nodes"),
-    "vless_nodes_clear":    ("Очистить узлы", "Clear nodes"),
-    "vless_node_default":   ("VLESS узел", "VLESS node"),
-    "addon_download_title": ("VLESS", "VLESS"),
-    "addon_downloading":    ("Скачивание дополнения...", "Downloading add-on..."),
-    "addon_download_error": ("Ошибка скачивания", "Download error"),
-    "addon_delete":         ("Удалить дополнение", "Delete add-on"),
-    "addon_delete_title":   ("Удалить дополнение?", "Delete add-on?"),
-    "addon_delete_msg":     ("Дополнение будет удалено.", "The add-on will be removed."),
-    "btn_delete":           ("Удалить", "Delete"),
-    "btn_cancel":           ("Отмена", "Cancel"),
-    "addon_delete_error":   ("Ошибка удаления", "Delete error"),
-    "vless_no_core_msg":    ("Нет ядра VLESS.\nНажмите кнопку ниже, чтобы скачать дополнение.", "VLESS core is not available.\nTap the button below to download the add-on."),
-    "vless_download_addon": ("Скачать дополнение", "Download add-on"),
-    "settings_error":       ("Ошибка настроек", "Settings error"),
-    "vless_custom_sub_err": ("Ошибка подписки", "Subscription error"),
-    "vless_custom_sub_empty": ("Подписка не содержит узлов", "Subscription contains no nodes"),
-    "vless_custom_sub_bad": ("Неверная ссылка подписки", "Invalid subscription URL"),
-    "vless_app_not_supported": ("Приложение не поддерживается", "App is not supported"),
-    "zapretvpns_btn":       ("Получить ключи из бота", "Get keys from bot"),
-    "update_available":     ("Обновить плагин (v{ver})", "Update plugin (v{ver})"),
-    "update_downloading":   ("Обновление плагина...", "Updating plugin..."),
-    "update_done":          ("Плагин обновлён до v{ver}. Перезагрузите плагин.", "Plugin updated to v{ver}. Reload plugin."),
-    "update_error":         ("Ошибка обновления", "Update error"),
+T = {
+    "settings_header":      "Настройки ZapretKVN",
+    "enable_plugin":        "Включить VLESS",
+    "open_tg_settings":     "Настройки прокси Telegram",
+    "menu_settings":        "Настройки ZapretKVN",
+    "vless_nodes_header":   "Серверы",
+    "vless_add_key":        "Вставьте vless:// ключ",
+    "vless_add_sub":        "Ссылка на подписку",
+    "vless_no_nodes":       "Добавьте ключ или подписку",
+    "vless_nodes_manage":   "Управление серверами",
+    "vless_nodes_update":   "Обновить серверы",
+    "vless_nodes_clear":    "Очистить серверы",
+    "vless_node_default":   "Сервер VLESS",
+    "addon_download_title": "VLESS",
+    "addon_downloading":    "Скачивание ядра...",
+    "addon_download_error": "Ошибка скачивания",
+    "addon_delete":         "Удалить ядро",
+    "addon_delete_title":   "Удалить ядро?",
+    "addon_delete_msg":     "Ядро VLESS будет удалено.",
+    "btn_delete":           "Удалить",
+    "btn_cancel":           "Отмена",
+    "addon_delete_error":   "Ошибка удаления",
+    "vless_no_core_msg":    "Нет ядра VLESS.\nНажмите кнопку ниже, чтобы скачать.",
+    "vless_download_addon": "Скачать ядро VLESS",
+    "settings_error":       "Ошибка настроек",
+    "vless_custom_sub_err": "Ошибка подписки",
+    "vless_custom_sub_empty": "Подписка не содержит серверов",
+    "vless_custom_sub_bad": "Неверная ссылка подписки",
+    "vless_app_not_supported": "Приложение не поддерживается",
+    "zapretvpns_btn":       "Получить ключи из бота",
+    "update_available":     "Обновить плагин (v{ver})",
+    "update_check_btn":     "Проверить обновления",
+    "update_downloading":   "Обновление плагина...",
+    "update_done":          "Обновлено до v{ver}. Перезагрузите плагин.",
+    "update_error":         "Ошибка обновления",
+    "update_no_updates":    "Обновлений нет (v{ver})",
+    "update_checking":      "Проверка...",
+    "node_connect":         "Подключить",
+    "node_disconnect":      "Отключить",
+    "node_rename":          "Переименовать",
+    "node_delete":          "Удалить сервер",
+    "node_delete_confirm":  "Удалить этот сервер?",
+    "node_rename_title":    "Новое имя сервера",
+    "node_actions":         "Действия",
+    "clipboard_found":      "Найден VLESS ключ",
+    "clipboard_add":        "Добавить в плагин?",
+    "btn_add":              "Добавить",
+    "key_added":            "Ключ добавлен",
 }
 
 def Z(key):
-    lang = Locale.getDefault().getLanguage()
-    idx = 0 if str(lang).startswith("ru") else 1
-    try: return str(TRANSLATIONS.get(key, (key, key))[idx])
-    except: return str(key)
+    return T.get(key, key)
 
 def _to_int(v, d=0):
     try: return int(v)
@@ -171,7 +181,9 @@ def _parse_version(ver_str):
 def _check_plugin_update():
     """Returns (remote_version_str, raw_content) if update available, else (None, None)."""
     try:
+        _log(f"update check: fetching {PLUGIN_UPDATE_URL}")
         r = requests.get(PLUGIN_UPDATE_URL, timeout=15)
+        _log(f"update check: status={r.status_code} len={len(r.text or '')}")
         if r.status_code != 200:
             return None, None
         content = r.text
@@ -183,12 +195,14 @@ def _check_plugin_update():
                 except:
                     pass
                 break
+        _log(f"update check: remote={remote_ver} local={__version__}")
         if not remote_ver:
             return None, None
         if _parse_version(remote_ver) > _parse_version(__version__):
             return remote_ver, content
         return None, None
-    except:
+    except Exception as e:
+        _log(f"update check error: {e}")
         return None, None
 
 def _set_tg_proxy_enabled(enabled):
@@ -213,7 +227,7 @@ def _set_tg_proxy_enabled(enabled):
     try: NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.proxySettingsChanged)
     except: pass
 
-def _log(msg): log(f"[exitfy] {msg}")
+def _log(msg): log(f"[zapretkvn] {msg}")
 
 def _log_exc(prefix):
     try:
@@ -742,7 +756,7 @@ def _fetch_vless_nodes(url):
     except Exception as e:
         _log(f"fetch_vless_nodes error ({url}): {e}"); return []
 
-class exitfyPlugin(BasePlugin):
+class zapretkvnPlugin(BasePlugin):
     def on_plugin_load(self):
         try:
             _log("on_plugin_load: start")
@@ -755,8 +769,8 @@ class exitfyPlugin(BasePlugin):
             self._vless_connect_token = 0
             self._ping_event = threading.Event()
 
-            self._chat_menu_item_id = "exitfy_settings_chat"
-            self._drawer_menu_item_id = "exitfy_settings_drawer"
+            self._chat_menu_item_id = "zapretkvn_settings_chat"
+            self._drawer_menu_item_id = "zapretkvn_settings_drawer"
 
             self._vpn_guard_stop = threading.Event()
             self._vpn_guard_was_active = False
@@ -769,8 +783,10 @@ class exitfyPlugin(BasePlugin):
             self._last_custom_sub_applied = ""
             self._update_available_ver = None
             self._update_content = None
+            self._last_clipboard_uri = ""
 
             self._add_menu_items()
+            self._install_clipboard_hook()
 
             threading.Thread(target=self._check_for_update, daemon=True).start()
 
@@ -1086,6 +1102,9 @@ class exitfyPlugin(BasePlugin):
 
         items += [
             Divider(),
+            Text(text=Z("update_check_btn"),
+                 icon="msg_download",
+                 on_click=lambda v: self._manual_update_check()),
             Text(text=Z("open_tg_settings"),
                  icon="msg_settings",
                  on_click=lambda v: self._open_tg_proxy_settings()),
@@ -1172,23 +1191,25 @@ class exitfyPlugin(BasePlugin):
             items.append(Text(text=Z("vless_no_nodes")))
         else:
             if self._vless_data.get("manual"):
-                for node in self._vless_data["manual"]:
+                for i, node in enumerate(self._vless_data["manual"]):
                     is_act = (node["uri"] == active)
                     ping = node.get("ping", -1)
-                    ping_str = f" — {ping}ms" if ping > 0 else ""
-                    label = node["name"] + ping_str
+                    ping_str = f" — {ping}ms" if ping and ping > 0 and ping < 9999 else ""
+                    prefix = ">> " if is_act else ""
+                    label = prefix + node["name"] + ping_str
                     items.append(Text(text=label, accent=bool(is_act),
-                                      on_click=self._make_vless_node_select(node["uri"])))
+                                      on_click=self._make_node_options(i, "manual", node)))
 
             for sub in self._vless_data.get("subs", []):
                 nodes = sub.get("nodes", [])
                 if not nodes: continue
                 items.append(Header(text=f"{sub['name']} ({len(nodes)})"))
-                for node in nodes:
+                for j, node in enumerate(nodes):
                     is_act = (node["uri"] == active)
                     ping = node.get("ping", -1)
-                    ping_str = f" — {ping}ms" if ping > 0 else ""
-                    label = node["name"] + ping_str
+                    ping_str = f" — {ping}ms" if ping and ping > 0 and ping < 9999 else ""
+                    prefix = ">> " if is_act else ""
+                    label = prefix + node["name"] + ping_str
                     items.append(Text(text=label, accent=bool(is_act),
                                       on_click=self._make_vless_node_select(node["uri"])))
 
@@ -1237,6 +1258,49 @@ class exitfyPlugin(BasePlugin):
         except:
             pass
 
+    def _install_clipboard_hook(self):
+        try:
+            plugin_ref = self
+            class _ClipboardHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        ctx = ApplicationLoader.applicationContext
+                        cm = ctx.getSystemService("clipboard")
+                        if not cm or not cm.hasPrimaryClip():
+                            return
+                        clip = cm.getPrimaryClip()
+                        if not clip or clip.getItemCount() == 0:
+                            return
+                        item = clip.getItemAt(0)
+                        if not item:
+                            return
+                        text = str(item.getText() or "")
+                        if "vless://" not in text:
+                            return
+                        uri = _sanitize_vless_uri(text)
+                        if not uri.startswith("vless://") or "@" not in uri:
+                            return
+                        if uri == getattr(plugin_ref, "_last_clipboard_uri", ""):
+                            return
+                        manual = plugin_ref._vless_data.get("manual", [])
+                        if any(n["uri"] == uri for n in manual):
+                            plugin_ref._last_clipboard_uri = uri
+                            return
+                        plugin_ref._last_clipboard_uri = uri
+                        plugin_ref._show_clipboard_add_dialog(uri)
+                    except:
+                        pass
+
+            LaunchActivity = find_class("org.telegram.ui.LaunchActivity")
+            if LaunchActivity:
+                for m in LaunchActivity.getDeclaredMethods():
+                    if m.getName() == "onResume" and len(m.getParameterTypes()) == 0:
+                        self.hook_method(m, _ClipboardHook())
+                        _log("clipboard hook installed")
+                        break
+        except Exception as e:
+            _log(f"clipboard hook install error: {e}")
+
     def _remove_menu_items(self):
         try:
             self.remove_menu_item(self._chat_menu_item_id)
@@ -1282,8 +1346,8 @@ class exitfyPlugin(BasePlugin):
                     return
                 except:
                     try:
-                        _log("open_settings: PC.openPluginSettings('exitfy')")
-                        PC.openPluginSettings("exitfy")
+                        _log("open_settings: PC.openPluginSettings('zapretkvn')")
+                        PC.openPluginSettings("zapretkvn")
                         return
                     except:
                         pass
@@ -1331,9 +1395,14 @@ class exitfyPlugin(BasePlugin):
         self._vless_save_data()
         self._ping_event.set()
         try:
+            self.set_setting("vless_custom_key", "", reload_settings=False)
+        except:
+            pass
+        try:
             self.set_setting("vless_enabled", True, reload_settings=True)
         except:
             pass
+        run_on_ui_thread(lambda: BulletinHelper.show_success(Z("key_added")))
         threading.Thread(target=self._vless_connect, daemon=True).start()
         run_on_ui_thread(self._reload_settings_ui)
 
@@ -1412,6 +1481,23 @@ class exitfyPlugin(BasePlugin):
                 run_on_ui_thread(self._reload_settings_ui)
         except:
             pass
+
+    def _manual_update_check(self):
+        run_on_ui_thread(lambda: BulletinHelper.show_success(Z("update_checking")))
+        def task():
+            try:
+                ver, content = _check_plugin_update()
+                if ver and content:
+                    self._update_available_ver = ver
+                    self._update_content = content
+                    run_on_ui_thread(self._reload_settings_ui)
+                else:
+                    msg = Z("update_no_updates").format(ver=__version__)
+                    run_on_ui_thread(lambda: BulletinHelper.show_success(msg))
+            except Exception as e:
+                _log(f"manual update check error: {e}")
+                run_on_ui_thread(lambda: BulletinHelper.show_error(Z("update_error")))
+        threading.Thread(target=task, daemon=True).start()
 
     def _do_update(self, v=None):
         ver = self._update_available_ver
@@ -1676,6 +1762,129 @@ class exitfyPlugin(BasePlugin):
                 threading.Thread(target=self._vless_connect, daemon=True).start()
             self._reload_settings_ui()
         return handler
+
+    def _make_node_options(self, idx, source, node):
+        def handler(v):
+            try:
+                frag = get_last_fragment()
+                act = frag.getParentActivity() if frag else None
+                if not act:
+                    self._make_vless_node_select(node["uri"])(v)
+                    return
+
+                uri = node["uri"]
+                is_act = (uri == self._vless_active_uri)
+                connect_label = Z("node_disconnect") if (is_act and self._vless_running) else Z("node_connect")
+                menu_items = [connect_label, Z("node_rename"), Z("node_delete")]
+
+                def on_item(dlg, which):
+                    w = int(which)
+                    if w == 0:
+                        self._make_vless_node_select(uri)(None)
+                    elif w == 1:
+                        self._rename_manual_node(idx, act)
+                    elif w == 2:
+                        self._delete_manual_node(idx, act)
+
+                b = AlertDialogBuilder(act)
+                b.set_title(node["name"])
+                b.set_items(menu_items, on_item)
+                b.set_negative_button(Z("btn_cancel"), lambda d, w: d.dismiss())
+                b.show()
+            except Exception as e:
+                _log(f"node options error: {e}")
+                self._make_vless_node_select(node["uri"])(v)
+        return handler
+
+    def _delete_manual_node(self, idx, act):
+        manual = self._vless_data.get("manual", [])
+        if idx < 0 or idx >= len(manual):
+            return
+
+        def do_delete():
+            node = manual[idx]
+            uri = node["uri"]
+            manual.pop(idx)
+            self._vless_data["manual"] = manual
+            if self._vless_active_uri == uri:
+                self._vless_active_uri = ""
+                self._vless_disconnect(silent=True)
+            self._vless_save_data()
+            self._reload_settings_ui()
+
+        try:
+            b = AlertDialogBuilder(act)
+            b.set_title(Z("node_delete"))
+            b.set_message(Z("node_delete_confirm"))
+            b.set_negative_button(Z("btn_cancel"), lambda d, w: d.dismiss())
+            b.set_positive_button(Z("btn_delete"), lambda d, w: (d.dismiss(), do_delete()))
+            try:
+                b.make_button_red(AlertDialogBuilder.BUTTON_POSITIVE)
+            except:
+                pass
+            b.show()
+        except:
+            do_delete()
+
+    def _rename_manual_node(self, idx, act):
+        manual = self._vless_data.get("manual", [])
+        if idx < 0 or idx >= len(manual):
+            return
+        try:
+            from android.widget import EditText
+            inp = EditText(act)
+            inp.setText(manual[idx]["name"])
+            inp.setSelection(len(manual[idx]["name"]))
+
+            def do_rename(d, w):
+                try:
+                    new_name = str(inp.getText()).strip()
+                    if new_name:
+                        manual[idx]["name"] = new_name
+                        self._vless_data["manual"] = manual
+                        self._vless_save_data()
+                        self._reload_settings_ui()
+                except:
+                    pass
+                d.dismiss()
+
+            b = AlertDialogBuilder(act)
+            b.set_title(Z("node_rename_title"))
+            b.set_view(inp)
+            b.set_positive_button("OK", do_rename)
+            b.set_negative_button(Z("btn_cancel"), lambda d, w: d.dismiss())
+            b.show()
+        except Exception as e:
+            _log(f"rename node error: {e}")
+
+    def _show_clipboard_add_dialog(self, uri):
+        def _do():
+            try:
+                frag = get_last_fragment()
+                act = frag.getParentActivity() if frag else None
+                if not act:
+                    return
+
+                _, name = VlessConfigParser.parse(uri, 1080)
+                if not name:
+                    name = Z("vless_node_default")
+                short = uri[:60] + "..." if len(uri) > 60 else uri
+
+                def do_add(d, w):
+                    d.dismiss()
+                    self._vless_custom_key_buf = uri
+                    self._last_custom_key_applied = uri
+                    self._apply_vless_custom_key()
+
+                b = AlertDialogBuilder(act)
+                b.set_title(Z("clipboard_found"))
+                b.set_message(f"{name}\n\n{short}")
+                b.set_positive_button(Z("btn_add"), do_add)
+                b.set_negative_button(Z("btn_cancel"), lambda d, w: d.dismiss())
+                b.show()
+            except Exception as e:
+                _log(f"clipboard dialog error: {e}")
+        run_on_ui_thread(_do)
 
     def _vless_open_nodes_menu(self):
         frag = get_last_fragment()
