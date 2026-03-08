@@ -30,7 +30,7 @@ __name__ = "ZapretKVN"
 __description__ = "VLESS прокси для Telegram"
 __icon__ = "exitFy/0"
 __author__ = "@zapretvpns_bot"
-__version__ = "3.0.3"
+__version__ = "3.1.0"
 __min_version__ = "12.1.1"
 
 VLESS_READY_WAIT_SEC = 4.0
