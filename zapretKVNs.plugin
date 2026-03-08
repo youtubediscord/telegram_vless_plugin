@@ -31,12 +31,13 @@ __name__ = "exitFy"
 __description__ = "Application download speed optimization"
 __icon__ = "exitFy/0"
 __author__ = "@exteraPluginsSup"
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 __min_version__ = "12.1.1"
 
 VLESS_READY_WAIT_SEC = 4.0
 VLESS_READY_POLL_SEC = 0.1
-ZAPRETVPNS_BOT = "https://t.me/zapretvpns_bot"
+ZAPRETVPNS_BOT = "tg://resolve?domain=zapretvpns_bot"
+PLUGIN_UPDATE_URL = "https://raw.githubusercontent.com/youtubediscord/telegram_vless_plugin/main/zapretKVNs.plugin"
 
 TRANSLATIONS = {
     "settings_header":      ("Настройки плагина", "Plugin settings"),
@@ -68,6 +69,10 @@ TRANSLATIONS = {
     "vless_custom_sub_bad": ("Неверная ссылка подписки", "Invalid subscription URL"),
     "vless_app_not_supported": ("Приложение не поддерживается", "App is not supported"),
     "zapretvpns_btn":       ("Получить ключи из бота", "Get keys from bot"),
+    "update_available":     ("Обновить плагин (v{ver})", "Update plugin (v{ver})"),
+    "update_downloading":   ("Обновление плагина...", "Updating plugin..."),
+    "update_done":          ("Плагин обновлён до v{ver}. Перезагрузите плагин.", "Plugin updated to v{ver}. Reload plugin."),
+    "update_error":         ("Ошибка обновления", "Update error"),
 }
 
 def Z(key):
@@ -156,6 +161,35 @@ def _sanitize_vless_uri(raw_uri):
         return base + "#" + urllib.parse.quote(clean, safe="-._~")
     except:
         return base
+
+def _parse_version(ver_str):
+    try:
+        return tuple(int(x) for x in str(ver_str).strip().split("."))
+    except:
+        return (0, 0, 0)
+
+def _check_plugin_update():
+    """Returns (remote_version_str, raw_content) if update available, else (None, None)."""
+    try:
+        r = requests.get(PLUGIN_UPDATE_URL, timeout=15)
+        if r.status_code != 200:
+            return None, None
+        content = r.text
+        remote_ver = None
+        for line in content.splitlines()[:50]:
+            if line.strip().startswith("__version__"):
+                try:
+                    remote_ver = line.split("=", 1)[1].strip().strip('"').strip("'")
+                except:
+                    pass
+                break
+        if not remote_ver:
+            return None, None
+        if _parse_version(remote_ver) > _parse_version(__version__):
+            return remote_ver, content
+        return None, None
+    except:
+        return None, None
 
 def _set_tg_proxy_enabled(enabled):
     try:
@@ -494,16 +528,18 @@ def _vless_apply_tg_proxy(port, enable):
                         cm.setProxySettings(True, "127.0.0.1", port, "", "", "")
                     else:
                         cm.setProxySettings(False, "", 0, "", "", "")
-            except:
-                pass
+                    _log(f"vless_apply_tg_proxy: setProxySettings ac={ac} ok")
+            except Exception as e:
+                _log(f"vless_apply_tg_proxy: setProxySettings ac={ac} error: {e}")
 
         try:
             if enable:
                 ConnectionsManager.setProxySettings(True, "127.0.0.1", port, "", "", "")
             else:
                 ConnectionsManager.setProxySettings(False, "", 0, "", "", "")
-        except:
-            pass
+            _log("vless_apply_tg_proxy: static setProxySettings ok")
+        except Exception as e:
+            _log(f"vless_apply_tg_proxy: static setProxySettings error: {e}")
 
         def _notify():
             try:
@@ -731,8 +767,12 @@ class exitfyPlugin(BasePlugin):
             self._ping_stop = threading.Event()
             self._last_custom_key_applied = ""
             self._last_custom_sub_applied = ""
+            self._update_available_ver = None
+            self._update_content = None
 
             self._add_menu_items()
+
+            threading.Thread(target=self._check_for_update, daemon=True).start()
 
             self._vpn_guard_stop.clear()
             threading.Thread(target=self._vpn_guard_loop, daemon=True).start()
@@ -1027,6 +1067,16 @@ class exitfyPlugin(BasePlugin):
         items = [
             Header(text=Z("settings_header")),
         ]
+
+        try:
+            upd_ver = getattr(self, "_update_available_ver", None)
+            if upd_ver:
+                items.append(Text(
+                    text=Z("update_available").format(ver=upd_ver),
+                    icon="msg_download", accent=True,
+                    on_click=self._do_update))
+        except:
+            pass
 
         try:
             items += self._vless_settings_items()
@@ -1352,6 +1402,63 @@ class exitfyPlugin(BasePlugin):
         except:
             pass
 
+    def _check_for_update(self):
+        try:
+            ver, content = _check_plugin_update()
+            if ver and content:
+                self._update_available_ver = ver
+                self._update_content = content
+                _log(f"update available: v{__version__} -> v{ver}")
+                run_on_ui_thread(self._reload_settings_ui)
+        except:
+            pass
+
+    def _do_update(self, v=None):
+        ver = self._update_available_ver
+        content = self._update_content
+        if not ver or not content:
+            return
+
+        def task():
+            try:
+                _log(f"plugin update: downloading v{ver}")
+                # find current plugin file path
+                plugin_path = None
+                try:
+                    src = os.path.abspath(__file__)
+                    if os.path.isfile(src):
+                        plugin_path = src
+                except:
+                    pass
+                if not plugin_path:
+                    try:
+                        import inspect
+                        src = inspect.getfile(type(self))
+                        if os.path.isfile(src):
+                            plugin_path = src
+                    except:
+                        pass
+                if not plugin_path:
+                    _log("plugin update: cannot find plugin file path")
+                    run_on_ui_thread(lambda: BulletinHelper.show_error(Z("update_error")))
+                    return
+
+                _log(f"plugin update: writing to {plugin_path}")
+                with open(plugin_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+                self._update_available_ver = None
+                self._update_content = None
+                msg = Z("update_done").format(ver=ver)
+                _log(f"plugin update: done v{ver}")
+                run_on_ui_thread(lambda: BulletinHelper.show_success(msg))
+                run_on_ui_thread(self._reload_settings_ui)
+            except Exception as e:
+                _log(f"plugin update error: {e}")
+                run_on_ui_thread(lambda: BulletinHelper.show_error(Z("update_error")))
+
+        threading.Thread(target=task, daemon=True).start()
+
     def _vless_save_data(self):
         self._vless_data["active_uri"] = self._vless_active_uri
         self.set_setting("vless_data", self._vless_data)
@@ -1483,6 +1590,22 @@ class exitfyPlugin(BasePlugin):
                                 _log(f"vless_connect: SOCKS5 handshake bad resp={_vr.hex() if _vr else 'empty'}")
                     except Exception as _ve:
                         _log(f"vless_connect: SOCKS5 verify error: {_ve}")
+                    # test real connectivity through SOCKS5 -> VLESS
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _ts:
+                            _ts.settimeout(5.0)
+                            _ts.connect(('127.0.0.1', port))
+                            _ts.sendall(b'\x05\x01\x00')
+                            _ts.recv(2)
+                            # SOCKS5 CONNECT to api.telegram.org:443
+                            _ts.sendall(b'\x05\x01\x00\x03' + bytes([len(b'api.telegram.org')]) + b'api.telegram.org' + b'\x01\xbb')
+                            _cr = _ts.recv(10)
+                            if len(_cr) >= 2 and _cr[1] == 0x00:
+                                _log("vless_connect: SOCKS5 CONNECT to api.telegram.org:443 OK")
+                            else:
+                                _log(f"vless_connect: SOCKS5 CONNECT failed reply={_cr.hex() if _cr else 'empty'}")
+                    except Exception as _te:
+                        _log(f"vless_connect: SOCKS5 CONNECT test error: {_te}")
                     _vless_apply_tg_proxy(port, True)
                     self._vless_running = True
                     self._vless_running_uri = uri
@@ -1678,9 +1801,21 @@ class exitfyPlugin(BasePlugin):
                         if "@" not in part: return
                         host_port = part.split("@", 1)[1].split("?", 1)[0].split("#", 1)[0]
                         host, port_str = host_port.split(":", 1)
-                        start = time.time()
-                        s = socket.create_connection((host, int(port_str)), timeout=1.5)
-                        p = int((time.time() - start) * 1000); s.close()
+                        port = int(port_str)
+                        # resolve DNS first (not timed) to measure only TCP latency
+                        try:
+                            addrs = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                            if not addrs: raise Exception("no addr")
+                            af, stype, proto, _, sa = addrs[0]
+                        except:
+                            with lock: results[id(n)] = 9999
+                            return
+                        s = socket.socket(af, stype, proto)
+                        s.settimeout(1.5)
+                        start = time.monotonic()
+                        s.connect(sa)
+                        p = int((time.monotonic() - start) * 1000)
+                        s.close()
                         with lock:
                             results[id(n)] = p
                     except:
