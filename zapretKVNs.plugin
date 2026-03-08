@@ -30,7 +30,7 @@ __name__ = "ZapretKVN"
 __description__ = "VLESS прокси для Telegram"
 __icon__ = "exitFy/0"
 __author__ = "@zapretvpns_bot"
-__version__ = "3.0.2"
+__version__ = "3.0.3"
 __min_version__ = "12.1.1"
 
 VLESS_READY_WAIT_SEC = 4.0
@@ -178,15 +178,68 @@ def _parse_version(ver_str):
     except:
         return (0, 0, 0)
 
-def _check_plugin_update():
+def _fetch_via_socks5(url, socks_port, timeout=15):
+    """Fetch URL content through SOCKS5 proxy using raw sockets (no PySocks needed)."""
+    import ssl
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname
+    path = parsed.path or "/"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    use_tls = (parsed.scheme == "https")
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(("127.0.0.1", socks_port))
+    # SOCKS5 handshake
+    s.sendall(b'\x05\x01\x00')
+    resp = s.recv(2)
+    if len(resp) < 2 or resp[0] != 0x05:
+        s.close(); raise Exception("SOCKS5 handshake failed")
+    # SOCKS5 CONNECT
+    host_bytes = host.encode()
+    s.sendall(b'\x05\x01\x00\x03' + bytes([len(host_bytes)]) + host_bytes + port.to_bytes(2, 'big'))
+    cresp = s.recv(10)
+    if len(cresp) < 2 or cresp[1] != 0x00:
+        s.close(); raise Exception(f"SOCKS5 CONNECT failed: {cresp.hex() if cresp else 'empty'}")
+    # TLS wrap if needed
+    if use_tls:
+        ctx = ssl.create_default_context()
+        s = ctx.wrap_socket(s, server_hostname=host)
+    # HTTP GET
+    req = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: zapretkvn-plugin\r\n\r\n"
+    s.sendall(req.encode())
+    data = b""
+    while True:
+        try:
+            chunk = s.recv(8192)
+            if not chunk: break
+            data += chunk
+        except:
+            break
+    s.close()
+    text = data.decode("utf-8", errors="ignore")
+    # split headers and body
+    if "\r\n\r\n" in text:
+        headers, body = text.split("\r\n\r\n", 1)
+        status_line = headers.split("\r\n")[0]
+        if " 200" not in status_line:
+            raise Exception(f"HTTP error: {status_line}")
+        return body
+    return text
+
+def _check_plugin_update(socks_port=0):
     """Returns (remote_version_str, raw_content) if update available, else (None, None)."""
     try:
-        _log(f"update check: fetching {PLUGIN_UPDATE_URL}")
-        r = requests.get(PLUGIN_UPDATE_URL, timeout=15)
-        _log(f"update check: status={r.status_code} len={len(r.text or '')}")
-        if r.status_code != 200:
-            return None, None
-        content = r.text
+        _log(f"update check: fetching {PLUGIN_UPDATE_URL} proxy={socks_port or 'direct'}")
+        if socks_port and socks_port > 0:
+            content = _fetch_via_socks5(PLUGIN_UPDATE_URL, socks_port)
+            _log(f"update check: via socks5 len={len(content or '')}")
+        else:
+            r = requests.get(PLUGIN_UPDATE_URL, timeout=15)
+            _log(f"update check: status={r.status_code} len={len(r.text or '')}")
+            if r.status_code != 200:
+                return None, None
+            content = r.text
         remote_ver = None
         for line in content.splitlines()[:50]:
             if line.strip().startswith("__version__"):
@@ -1471,9 +1524,22 @@ class zapretkvnPlugin(BasePlugin):
         except:
             pass
 
+    def _get_proxy_port(self):
+        try:
+            if self._vless_running and self._vless_port:
+                return int(self._vless_port)
+        except:
+            pass
+        return 0
+
     def _check_for_update(self):
         try:
+            # try direct first, then via proxy
             ver, content = _check_plugin_update()
+            if not ver and not content:
+                port = self._get_proxy_port()
+                if port:
+                    ver, content = _check_plugin_update(socks_port=port)
             if ver and content:
                 self._update_available_ver = ver
                 self._update_content = content
@@ -1486,7 +1552,8 @@ class zapretkvnPlugin(BasePlugin):
         run_on_ui_thread(lambda: BulletinHelper.show_success(Z("update_checking")))
         def task():
             try:
-                ver, content = _check_plugin_update()
+                port = self._get_proxy_port()
+                ver, content = _check_plugin_update(socks_port=port)
                 if ver and content:
                     self._update_available_ver = ver
                     self._update_content = content
