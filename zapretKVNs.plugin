@@ -1195,7 +1195,7 @@ class zapretkvnPlugin(BasePlugin):
                     is_act = (node["uri"] == active)
                     ping = node.get("ping", -1)
                     ping_str = f" — {ping}ms" if ping and ping > 0 and ping < 9999 else ""
-                    prefix = ">> " if is_act else ""
+                    prefix = "[*] " if is_act else ""
                     label = prefix + node["name"] + ping_str
                     items.append(Text(text=label, accent=bool(is_act),
                                       on_click=self._make_node_options(i, "manual", node)))
@@ -1208,7 +1208,7 @@ class zapretkvnPlugin(BasePlugin):
                     is_act = (node["uri"] == active)
                     ping = node.get("ping", -1)
                     ping_str = f" — {ping}ms" if ping and ping > 0 and ping < 9999 else ""
-                    prefix = ">> " if is_act else ""
+                    prefix = "[*] " if is_act else ""
                     label = prefix + node["name"] + ping_str
                     items.append(Text(text=label, accent=bool(is_act),
                                       on_click=self._make_vless_node_select(node["uri"])))
@@ -1745,20 +1745,9 @@ class zapretkvnPlugin(BasePlugin):
 
     def _make_vless_node_select(self, uri):
         def handler(v):
-            prev = self._vless_active_uri
             self._vless_active_uri = uri
             self._vless_save_data()
-            if prev == uri and self._vless_running:
-                try:
-                    self.set_setting("vless_enabled", False, reload_settings=True)
-                except:
-                    pass
-                self._vless_disconnect()
-            else:
-                try:
-                    self.set_setting("vless_enabled", True, reload_settings=True)
-                except:
-                    pass
+            if self.get_setting("vless_enabled", False):
                 threading.Thread(target=self._vless_connect, daemon=True).start()
             self._reload_settings_ui()
         return handler
@@ -1773,9 +1762,7 @@ class zapretkvnPlugin(BasePlugin):
                     return
 
                 uri = node["uri"]
-                is_act = (uri == self._vless_active_uri)
-                connect_label = Z("node_disconnect") if (is_act and self._vless_running) else Z("node_connect")
-                menu_items = [connect_label, Z("node_rename"), Z("node_delete")]
+                menu_items = [Z("node_connect"), Z("node_rename"), Z("node_delete")]
 
                 def on_item(dlg, which):
                     w = int(which)
