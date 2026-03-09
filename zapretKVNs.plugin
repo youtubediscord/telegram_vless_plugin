@@ -27,16 +27,22 @@ from org.telegram.tgnet import ConnectionsManager
 
 __id__ = "zapretkvn"
 __name__ = "ZapretKVN"
-__description__ = "VLESS прокси для Telegram"
+__description__ = "VLESS/VMess/Trojan/SS прокси для Telegram"
 __icon__ = "exitFy/0"
 __author__ = "@zapretvpns_bot"
-__version__ = "3.1.0"
+__version__ = "3.0.3"
 __min_version__ = "12.1.1"
 
 VLESS_READY_WAIT_SEC = 4.0
 VLESS_READY_POLL_SEC = 0.1
+HEALTH_CHECK_INTERVAL_SEC = 15.0
+HEALTH_CHECK_FAIL_THRESHOLD = 2
+_PROXY_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://")
 ZAPRETVPNS_BOT = "tg://resolve?domain=zapretvpns_bot"
 PLUGIN_UPDATE_URL = "https://raw.githubusercontent.com/youtubediscord/telegram_vless_plugin/main/zapretKVNs.plugin"
+MAIN_SETTINGS_ENTRY_TAG = "zapretkvn_main_settings_entry"
+PROXY_SETTINGS_ENTRY_TAG = "zapretkvn_proxy_settings_entry"
+PLUGIN_SETTINGS_CARD_TAG = "zapretkvn_plugin_settings_card"
 
 T = {
     "settings_header":      "Настройки ZapretKVN",
@@ -44,8 +50,15 @@ T = {
     "open_tg_settings":     "Настройки прокси Telegram",
     "menu_settings":        "Настройки ZapretKVN",
     "vless_nodes_header":   "Серверы",
-    "vless_add_key":        "Вставьте vless:// ключ",
+    "vless_quick_actions":  "Быстрое подключение",
+    "vless_add_key":        "VLESS: вставить из буфера",
     "vless_add_sub":        "Ссылка на подписку",
+    "vless_paste_hint":     "Скопируйте ключ VLESS/VMess/Trojan/SS и нажмите первую кнопку",
+    "vless_quick_desc":     "Скопируйте ключ, вставьте его из буфера или сразу откройте прокси Telegram",
+    "vless_proxy_short_hint": "Для Telegram выберите адрес 127.0.0.1",
+    "zapretvpns_btn_desc":  "Открыть бота с ключами ZapretVPNs",
+    "zapretvpns_open_btn":  "Открыть @zapretvpns_bot",
+    "zapretvpns_open_desc": "Прямой переход в бот ZapretVPNs",
     "vless_no_nodes":       "Добавьте ключ или подписку",
     "vless_nodes_manage":   "Управление серверами",
     "vless_nodes_update":   "Обновить серверы",
@@ -86,6 +99,15 @@ T = {
     "clipboard_add":        "Добавить в плагин?",
     "btn_add":              "Добавить",
     "key_added":            "Ключ добавлен",
+    "keys_added":           "Добавлено серверов: {count}",
+    "clipboard_found_multi": "Найдены ключи ({count})",
+    "clipboard_empty":      "В буфере нет ключа VLESS/VMess/Trojan/SS",
+    "tg_settings_vless":    "Управление VLESS",
+    "tg_settings_vless_desc": "Открыть настройки плагина ZapretKVN",
+    "proxy_hint":           "Управление идет через 127.0.0.1\nВ настройках прокси Telegram выберите именно адрес 127.0.0.1",
+    "auto_switch":          "Автопереключение серверов",
+    "auto_switch_desc":     "Переключаться на лучший сервер при недоступности",
+    "auto_switch_notify":   "Автопереключение на: {name}",
 }
 
 def Z(key):
@@ -133,6 +155,16 @@ def _clean_vless_name(raw_name):
         s = Z("vless_node_default")
     return s
 
+def _is_proxy_uri(s):
+    return any(str(s).startswith(scheme) for scheme in _PROXY_SCHEMES)
+
+def _find_proxy_scheme(s):
+    for scheme in _PROXY_SCHEMES:
+        idx = s.find(scheme)
+        if idx >= 0:
+            return scheme, idx
+    return None, -1
+
 def _sanitize_vless_uri(raw_uri):
     try:
         s = str(raw_uri or "")
@@ -147,8 +179,8 @@ def _sanitize_vless_uri(raw_uri):
         return ""
 
     try:
-        idx = s.find("vless://")
-        if idx > 0:
+        scheme, idx = _find_proxy_scheme(s)
+        if scheme and idx > 0:
             s = s[idx:]
     except:
         pass
@@ -158,7 +190,10 @@ def _sanitize_vless_uri(raw_uri):
     except:
         pass
 
-    if not s.startswith("vless://"):
+    if not _is_proxy_uri(s):
+        return s
+    # vmess:// uses base64, don't touch fragment
+    if s.startswith("vmess://"):
         return s
     if "#" not in s:
         return s
@@ -171,6 +206,32 @@ def _sanitize_vless_uri(raw_uri):
         return base + "#" + urllib.parse.quote(clean, safe="-._~")
     except:
         return base
+
+def _extract_proxy_uris(text):
+    try:
+        s = str(text or "")
+    except:
+        return []
+    try:
+        links = re.findall(r"(?:vless|vmess|trojan|ss)://[^\s<>\"']+", s)
+    except:
+        return []
+    result = []
+    seen = set()
+    for raw in links:
+        try:
+            uri = _sanitize_vless_uri(raw)
+            if not uri or not _is_proxy_uri(uri) or len(uri) < 15:
+                continue
+            if not uri.startswith("vmess://") and "@" not in uri:
+                continue
+            if uri in seen:
+                continue
+            seen.add(uri)
+            result.append(uri)
+        except:
+            continue
+    return result
 
 def _parse_version(ver_str):
     try:
@@ -294,67 +355,303 @@ def _log_exc(prefix):
 
 class VlessConfigParser:
     @staticmethod
+    def _build_stream(params):
+        net = params.get("type", "tcp")
+        security = params.get("security", "none")
+        fp = params.get("fp", "chrome")
+        stream = {"network": net, "security": security}
+
+        if security == "reality":
+            stream["realitySettings"] = {
+                "show": False, "fingerprint": fp,
+                "serverName": params.get("sni", ""),
+                "publicKey": params.get("pbk", ""),
+                "shortId": params.get("sid", ""),
+                "spiderX": params.get("spx", ""),
+            }
+        elif security == "tls":
+            tls = {"serverName": params.get("sni", ""), "allowInsecure": False, "fingerprint": fp}
+            alpn = params.get("alpn", "")
+            if alpn:
+                tls["alpn"] = alpn.split(",")
+            stream["tlsSettings"] = tls
+
+        if net == "ws":
+            stream["wsSettings"] = {
+                "path": params.get("path", "/"),
+                "headers": {"Host": params.get("host", params.get("sni", ""))},
+            }
+        elif net == "grpc":
+            stream["grpcSettings"] = {
+                "serviceName": params.get("serviceName", ""),
+                "multiMode": params.get("mode", "multi") == "multi",
+            }
+        elif net in ("h2", "http"):
+            host = params.get("host", params.get("sni", ""))
+            stream["httpSettings"] = {
+                "path": params.get("path", "/"),
+                "host": [host] if host else [],
+            }
+        elif net in ("kcp", "mkcp"):
+            stream["kcpSettings"] = {
+                "header": {"type": params.get("headerType", "none")},
+                "seed": params.get("seed", ""),
+            }
+        elif net in ("xhttp", "splithttp"):
+            stream["xhttpSettings"] = {
+                "path": params.get("path", "/"),
+                "host": params.get("host", params.get("sni", "")),
+            }
+        elif net == "httpupgrade":
+            stream["httpupgradeSettings"] = {
+                "path": params.get("path", "/"),
+                "host": params.get("host", params.get("sni", "")),
+            }
+        return stream
+
+    @staticmethod
+    def _base_config(local_port):
+        return {
+            "log": {"loglevel": "warning"},
+            "dns": {"servers": ["1.1.1.1", "8.8.8.8"]},
+            "inbounds": [{"tag": "socks-in", "port": local_port, "listen": "127.0.0.1",
+                          "protocol": "socks",
+                          "settings": {"auth": "noauth", "udp": True}}],
+            "outbounds": [
+                {"tag": "proxy"},
+                {"tag": "direct", "protocol": "freedom", "settings": {}},
+            ],
+        }
+
+    @staticmethod
+    def _parse_std_uri(uri_str):
+        name = Z("vless_node_default")
+        if "#" in uri_str:
+            uri_str, frag = uri_str.split("#", 1)
+            name = _clean_vless_name(frag)
+            if not name:
+                name = Z("vless_node_default")
+        scheme_end = uri_str.find("://")
+        if scheme_end < 0:
+            return None
+        body = uri_str[scheme_end + 3:]
+        if "@" not in body:
+            return None
+        user_info, rest = body.split("@", 1)
+        if "?" in rest:
+            host_port, params_raw = rest.split("?", 1)
+        else:
+            host_port, params_raw = rest, ""
+        host_port = str(host_port).strip().rstrip("/")
+        if ":" not in host_port:
+            return None
+        host, port_str = host_port.split(":", 1)
+        try:
+            port = int(str(port_str).strip())
+        except:
+            return None
+        params = {}
+        if params_raw:
+            for pair in params_raw.split("&"):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    params[k] = urllib.parse.unquote(v)
+        return {"user": user_info, "host": host, "port": port, "params": params, "name": name}
+
+    @staticmethod
     def parse(uri_str, local_port):
         try:
             uri_str = _sanitize_vless_uri(uri_str)
-            if not uri_str.startswith("vless://"): return None, None
-            part = uri_str[8:]; name = Z("vless_node_default")
-            if "#" in part:
-                part, name = part.split("#", 1); name = _clean_vless_name(name)
+            if uri_str.startswith("vless://"):
+                return VlessConfigParser._parse_vless(uri_str, local_port)
+            elif uri_str.startswith("vmess://"):
+                return VlessConfigParser._parse_vmess(uri_str, local_port)
+            elif uri_str.startswith("trojan://"):
+                return VlessConfigParser._parse_trojan(uri_str, local_port)
+            elif uri_str.startswith("ss://"):
+                return VlessConfigParser._parse_ss(uri_str, local_port)
+            return None, None
+        except Exception as e:
+            _log(f"config parse error: {e}")
+            return None, None
+
+    @staticmethod
+    def _parse_vless(uri_str, local_port):
+        r = VlessConfigParser._parse_std_uri(uri_str)
+        if not r:
+            return None, None
+        uuid_str = r["user"]
+        params = r["params"]
+        flow = params.get("flow", "")
+        users = [{"id": uuid_str, "encryption": "none"}]
+        if flow:
+            users[0]["flow"] = flow
+        config = VlessConfigParser._base_config(local_port)
+        config["outbounds"][0].update({
+            "protocol": "vless",
+            "settings": {"vnext": [{"address": r["host"], "port": r["port"], "users": users}]},
+            "streamSettings": VlessConfigParser._build_stream(params),
+        })
+        return json.dumps(config), r["name"]
+
+    @staticmethod
+    def _parse_vmess(uri_str, local_port):
+        try:
+            b64_part = uri_str[8:]
+            if "#" in b64_part:
+                b64_part = b64_part.split("#", 1)[0]
+            b64_part = b64_part.strip()
+            b64_part = b64_part.replace("-", "+").replace("_", "/")
+            missing = len(b64_part) % 4
+            if missing:
+                b64_part += "=" * (4 - missing)
+            raw = base64.b64decode(b64_part, validate=False)
+            obj = json.loads(raw.decode("utf-8", errors="ignore"))
+        except Exception as e:
+            _log(f"vmess base64/json decode error: {e}")
+            return None, None
+
+        name = _clean_vless_name(obj.get("ps", ""))
+        if not name:
+            name = Z("vless_node_default")
+        host = obj.get("add", "")
+        try:
+            port = int(obj.get("port", 0))
+        except:
+            return None, None
+        if not host or not port:
+            return None, None
+
+        uuid_str = obj.get("id", "")
+        aid = _to_int(obj.get("aid", 0), 0)
+        scy = obj.get("scy", "auto") or "auto"
+
+        users = [{"id": uuid_str, "alterId": aid, "security": scy}]
+
+        net = obj.get("net", "tcp") or "tcp"
+        tls_val = obj.get("tls", "") or ""
+        sni = obj.get("sni", "") or ""
+        fp_val = obj.get("fp", "chrome") or "chrome"
+        alpn_val = obj.get("alpn", "") or ""
+        path_val = obj.get("path", "/") or "/"
+        host_val = obj.get("host", "") or ""
+        header_type = obj.get("type", "none") or "none"
+
+        params = {
+            "type": net,
+            "security": "tls" if tls_val == "tls" else "none",
+            "sni": sni or host_val,
+            "fp": fp_val,
+            "alpn": alpn_val,
+            "path": path_val,
+            "host": host_val or sni,
+            "headerType": header_type,
+            "serviceName": obj.get("path", ""),
+            "seed": obj.get("path", ""),
+        }
+
+        config = VlessConfigParser._base_config(local_port)
+        config["outbounds"][0].update({
+            "protocol": "vmess",
+            "settings": {"vnext": [{"address": host, "port": port, "users": users}]},
+            "streamSettings": VlessConfigParser._build_stream(params),
+        })
+        return json.dumps(config), name
+
+    @staticmethod
+    def _parse_trojan(uri_str, local_port):
+        r = VlessConfigParser._parse_std_uri(uri_str)
+        if not r:
+            return None, None
+        password = urllib.parse.unquote(r["user"])
+        params = r["params"]
+        if not params.get("security"):
+            params["security"] = "tls"
+        if not params.get("sni"):
+            params["sni"] = r["host"]
+
+        config = VlessConfigParser._base_config(local_port)
+        config["outbounds"][0].update({
+            "protocol": "trojan",
+            "settings": {"servers": [{"address": r["host"], "port": r["port"], "password": password}]},
+            "streamSettings": VlessConfigParser._build_stream(params),
+        })
+        return json.dumps(config), r["name"]
+
+    @staticmethod
+    def _parse_ss(uri_str, local_port):
+        try:
+            body = uri_str[5:]
+            name = Z("vless_node_default")
+            if "#" in body:
+                body, frag = body.split("#", 1)
+                name = _clean_vless_name(frag)
                 if not name:
                     name = Z("vless_node_default")
-            if "@" not in part: return None, None
-            uuid_str, rest = part.split("@", 1)
-            if "?" in rest: host_port, params_raw = rest.split("?", 1)
-            else: host_port, params_raw = rest, ""
-            host_port = str(host_port).strip().rstrip("/")
-            if ":" not in host_port: return None, None
-            host, port = host_port.split(":", 1)
-            try:
-                port = int(str(port).strip())
-            except:
-                return None, None
-            params = {}
-            if params_raw:
-                for pair in params_raw.split("&"):
-                    if "=" in pair:
-                        k, v = pair.split("=", 1); params[k] = urllib.parse.unquote(v)
-            flow = params.get("flow", "")
-            users = [{"id": uuid_str, "encryption": "none"}]
-            if flow: users[0]["flow"] = flow
-            config = {
-                "log": {"loglevel": "warning"},
-                "dns": {"servers": ["1.1.1.1", "8.8.8.8"]},
-                "inbounds": [{"tag": "socks-in", "port": local_port, "listen": "127.0.0.1",
-                              "protocol": "socks",
-                              "settings": {"auth": "noauth", "udp": True}}],
-                "outbounds": [{"tag": "proxy", "protocol": "vless",
-                               "settings": {"vnext": [{"address": host, "port": port,
-                                                        "users": users}]},
-                               "streamSettings": {"network": params.get("type", "tcp"),
-                                                  "security": params.get("security", "none")}},
-                              {"tag": "direct", "protocol": "freedom", "settings": {}}]
-            }
-            stream = config["outbounds"][0]["streamSettings"]
-            fp = params.get("fp", "chrome")
+            body = body.strip()
 
-            if params.get("security") == "reality":
-                stream["realitySettings"] = {"show": False, "fingerprint": fp,
-                    "serverName": params.get("sni", ""), "publicKey": params.get("pbk", ""),
-                    "shortId": params.get("sid", ""), "spiderX": params.get("spx", "")}
-            elif params.get("security") == "tls":
-                stream["tlsSettings"] = {"serverName": params.get("sni", ""),
-                                         "allowInsecure": False, "fingerprint": fp}
-            net = params.get("type", "tcp")
-            if net == "ws":
-                stream["wsSettings"] = {"path": params.get("path", "/"),
-                    "headers": {"Host": params.get("host", params.get("sni", ""))}}
-            elif net == "grpc":
-                stream["grpcSettings"] = {"serviceName": params.get("serviceName", ""),
-                    "multiMode": params.get("mode", "multi") == "multi"}
+            method = ""
+            password = ""
+            host = ""
+            port = 0
+
+            if "@" in body:
+                user_part, server_part = body.split("@", 1)
+                server_part = server_part.split("?", 1)[0].strip().rstrip("/")
+                try:
+                    user_part = user_part.replace("-", "+").replace("_", "/")
+                    miss = len(user_part) % 4
+                    if miss:
+                        user_part += "=" * (4 - miss)
+                    decoded = base64.b64decode(user_part, validate=False).decode("utf-8", errors="ignore")
+                    if ":" in decoded:
+                        method, password = decoded.split(":", 1)
+                    else:
+                        method = decoded
+                except:
+                    if ":" in user_part:
+                        method, password = user_part.split(":", 1)
+                    else:
+                        return None, None
+                if ":" not in server_part:
+                    return None, None
+                host, port_str = server_part.rsplit(":", 1)
+                try:
+                    port = int(port_str)
+                except:
+                    return None, None
+            else:
+                try:
+                    b64 = body.replace("-", "+").replace("_", "/")
+                    miss = len(b64) % 4
+                    if miss:
+                        b64 += "=" * (4 - miss)
+                    decoded = base64.b64decode(b64, validate=False).decode("utf-8", errors="ignore")
+                    if "@" not in decoded or ":" not in decoded:
+                        return None, None
+                    user_part, server_part = decoded.split("@", 1)
+                    if ":" in user_part:
+                        method, password = user_part.split(":", 1)
+                    if ":" in server_part:
+                        host, port_str = server_part.rsplit(":", 1)
+                        port = int(port_str)
+                except:
+                    return None, None
+
+            if not method or not host or not port:
+                return None, None
+
+            config = VlessConfigParser._base_config(local_port)
+            config["outbounds"][0].update({
+                "protocol": "shadowsocks",
+                "settings": {"servers": [{"address": host, "port": port,
+                                          "method": method, "password": password}]},
+                "streamSettings": {"network": "tcp", "security": "none"},
+            })
             return json.dumps(config), name
         except Exception as e:
-            _log(f"VLESS parse error: {e}"); return None, None
+            _log(f"ss parse error: {e}")
+            return None, None
 
 class VlessCore:
     def __init__(self):
@@ -555,6 +852,7 @@ def _vless_apply_tg_proxy(port, enable):
                 ed.putString("proxy_pass", "")
                 ed.putString("proxy_secret", "")
                 ed.putBoolean("proxy_enabled", True)
+                ed.putBoolean("proxy_calls_enabled", True)
                 ed.commit()
             except:
                 pass
@@ -637,7 +935,8 @@ def _fetch_vless_nodes(url):
         r = requests.get(url2, timeout=15)
         if r.status_code != 200: return []
         text = r.text.strip()
-        if "vless://" not in text:
+        has_scheme = any(s in text for s in _PROXY_SCHEMES)
+        if not has_scheme:
             try:
                 b64 = str(text or "").strip()
                 b64 = b64.replace("\n", "").replace("\r", "")
@@ -650,7 +949,7 @@ def _fetch_vless_nodes(url):
             except: pass
         nodes = []
         try:
-            links = re.findall(r"vless://[^\s]+", str(text or ""))
+            links = re.findall(r"(?:vless|vmess|trojan|ss)://[^\s]+", str(text or ""))
         except:
             links = []
 
@@ -778,7 +1077,7 @@ def _fetch_vless_nodes(url):
         if not links:
             for line in str(text or "").splitlines():
                 line = str(line or "").strip()
-                if line.startswith("vless://"):
+                if _is_proxy_uri(line):
                     links.append(line)
 
         filtered = 0
@@ -786,7 +1085,7 @@ def _fetch_vless_nodes(url):
         for link in links:
             try:
                 link = _sanitize_vless_uri(link)
-                if not link.startswith("vless://"):
+                if not _is_proxy_uri(link):
                     continue
                 try:
                     low = link.lower()
@@ -832,14 +1131,23 @@ class zapretkvnPlugin(BasePlugin):
             self._vless_active_uri = self._vless_data.get("active_uri", "")
             self._vless_custom_sub_url = self.get_setting("vless_custom_sub_url", "")
             self._ping_stop = threading.Event()
+            self._vless_custom_key_buf = ""
             self._last_custom_key_applied = ""
+            try:
+                self.set_setting("vless_custom_key", "", reload_settings=False)
+            except:
+                pass
             self._last_custom_sub_applied = ""
             self._update_available_ver = None
             self._update_content = None
             self._last_clipboard_uri = ""
+            self._plugin_settings_card_ready = False
+            self._health_stop = threading.Event()
+            self._health_fail_count = 0
 
             self._add_menu_items()
             self._install_clipboard_hook()
+            self._install_settings_hooks()
 
             threading.Thread(target=self._check_for_update, daemon=True).start()
 
@@ -848,6 +1156,7 @@ class zapretkvnPlugin(BasePlugin):
 
             _log(f"on_plugin_load: vless_enabled={self.get_setting('vless_enabled', False)} active_uri={bool(self._vless_active_uri)}")
             threading.Thread(target=self._vless_pinger_loop, daemon=True).start()
+            threading.Thread(target=self._health_check_loop, daemon=True).start()
             if self.get_setting("vless_enabled", False) and self._vless_active_uri:
                 threading.Thread(target=self._vless_connect, daemon=True).start()
             _log("on_plugin_load: done")
@@ -858,6 +1167,8 @@ class zapretkvnPlugin(BasePlugin):
         try:
             _log("on_plugin_unload: start")
             try: self._ping_stop.set()
+            except: pass
+            try: self._health_stop.set()
             except: pass
             try: self._vpn_guard_stop.set()
             except: pass
@@ -1133,7 +1444,15 @@ class zapretkvnPlugin(BasePlugin):
             self._vpn_guard_stop.wait(3.0)
 
     def create_settings(self):
-        items = [
+        items = []
+
+        try:
+            if not getattr(self, "_plugin_settings_card_ready", False):
+                items += self._vless_quick_action_items()
+        except Exception as e:
+            _log(f"quick actions error: {e}")
+
+        items += [
             Header(text=Z("settings_header")),
         ]
 
@@ -1158,9 +1477,6 @@ class zapretkvnPlugin(BasePlugin):
             Text(text=Z("update_check_btn"),
                  icon="msg_download",
                  on_click=lambda v: self._manual_update_check()),
-            Text(text=Z("open_tg_settings"),
-                 icon="msg_settings",
-                 on_click=lambda v: self._open_tg_proxy_settings()),
         ]
 
         try:
@@ -1200,6 +1516,11 @@ class zapretkvnPlugin(BasePlugin):
         except:
             pass
 
+        items += [
+            Divider(),
+            Text(text=Z("proxy_hint"), icon="msg_info"),
+        ]
+
         return items
 
     def _vless_settings_items(self):
@@ -1221,21 +1542,17 @@ class zapretkvnPlugin(BasePlugin):
         active = self._vless_active_uri
 
         items = [
-            Input(key="vless_custom_key", text=Z("vless_add_key"),
-                  default="",
-                  icon="msg_link2",
-                  on_change=self._on_vless_custom_key_input),
             Input(key="vless_custom_sub", text=Z("vless_add_sub"),
                   default="",
                   icon="msg_link",
                   on_change=self._on_vless_custom_sub_input),
-            Text(text=Z("zapretvpns_btn"), icon="msg_link",
-                 accent=True,
-                 on_click=lambda v: self._open_tg_link(ZAPRETVPNS_BOT)),
             Divider(),
             Switch(key="vless_enabled", text=Z("enable_plugin"),
                    default=False,
                    icon="msg_permissions", on_change=self._on_enabled_changed),
+            Switch(key="auto_switch_enabled", text=Z("auto_switch"),
+                   default=False,
+                   icon="msg_retry"),
             Divider(),
             Header(text=Z("vless_nodes_header")),
         ]
@@ -1272,6 +1589,21 @@ class zapretkvnPlugin(BasePlugin):
             Divider(),
         ]
         return items
+
+    def _vless_quick_action_items(self):
+        return [
+            Header(text=Z("vless_quick_actions")),
+            Text(text=Z("vless_add_key"),
+                 icon="msg_link2", accent=True,
+                 on_click=lambda v: self._paste_vless_from_clipboard()),
+            Text(text=Z("open_tg_settings"), icon="msg_settings",
+                 on_click=lambda v: self._open_tg_proxy_settings()),
+            Text(text=Z("zapretvpns_btn"), icon="msg_link",
+                 on_click=lambda v: self._open_tg_link(ZAPRETVPNS_BOT)),
+            Text(text=Z("zapretvpns_open_btn"), icon="msg_link",
+                 on_click=lambda v: self._open_tg_link(ZAPRETVPNS_BOT)),
+            Divider(text=Z("vless_paste_hint")),
+        ]
 
     def _add_menu_items(self):
         def on_click(ctx):
@@ -1317,30 +1649,19 @@ class zapretkvnPlugin(BasePlugin):
             class _ClipboardHook(MethodHook):
                 def after_hooked_method(self, param):
                     try:
-                        ctx = ApplicationLoader.applicationContext
-                        cm = ctx.getSystemService("clipboard")
-                        if not cm or not cm.hasPrimaryClip():
+                        uris = plugin_ref._get_clipboard_proxy_uris()
+                        if not uris:
                             return
-                        clip = cm.getPrimaryClip()
-                        if not clip or clip.getItemCount() == 0:
-                            return
-                        item = clip.getItemAt(0)
-                        if not item:
-                            return
-                        text = str(item.getText() or "")
-                        if "vless://" not in text:
-                            return
-                        uri = _sanitize_vless_uri(text)
-                        if not uri.startswith("vless://") or "@" not in uri:
-                            return
-                        if uri == getattr(plugin_ref, "_last_clipboard_uri", ""):
+                        if uris[0] == getattr(plugin_ref, "_last_clipboard_uri", ""):
                             return
                         manual = plugin_ref._vless_data.get("manual", [])
-                        if any(n["uri"] == uri for n in manual):
-                            plugin_ref._last_clipboard_uri = uri
+                        existing = {n["uri"] for n in manual}
+                        new_uris = [u for u in uris if u not in existing]
+                        if not new_uris:
+                            plugin_ref._last_clipboard_uri = uris[0]
                             return
-                        plugin_ref._last_clipboard_uri = uri
-                        plugin_ref._show_clipboard_add_dialog(uri)
+                        plugin_ref._last_clipboard_uri = uris[0]
+                        plugin_ref._show_clipboard_add_dialog(new_uris)
                     except:
                         pass
 
@@ -1353,6 +1674,580 @@ class zapretkvnPlugin(BasePlugin):
                         break
         except Exception as e:
             _log(f"clipboard hook install error: {e}")
+
+    def _get_clipboard_proxy_uris(self):
+        try:
+            ctx = ApplicationLoader.applicationContext
+            cm = ctx.getSystemService("clipboard")
+            if not cm or not cm.hasPrimaryClip():
+                return []
+            clip = cm.getPrimaryClip()
+            if not clip or clip.getItemCount() == 0:
+                return []
+            item = clip.getItemAt(0)
+            if not item:
+                return []
+            text = str(item.getText() or "")
+            if not any(s in text for s in _PROXY_SCHEMES):
+                return []
+            return _extract_proxy_uris(text)
+        except:
+            return []
+
+    def _get_clipboard_proxy_uri(self):
+        uris = self._get_clipboard_proxy_uris()
+        return uris[0] if uris else ""
+
+    def _paste_vless_from_clipboard(self):
+        uris = self._get_clipboard_proxy_uris()
+        if not uris:
+            run_on_ui_thread(lambda: BulletinHelper.show_error(Z("clipboard_empty")))
+            return
+        self._last_clipboard_uri = uris[0]
+        if len(uris) == 1:
+            self._vless_custom_key_buf = uris[0]
+            self._last_custom_key_applied = uris[0]
+            self._apply_vless_custom_key()
+        else:
+            self._apply_vless_custom_keys(uris)
+
+    def _view_group_has_tag(self, group, tag):
+        try:
+            return group.findViewWithTag(tag) is not None
+        except:
+            pass
+        try:
+            for i in range(group.getChildCount()):
+                child = group.getChildAt(i)
+                try:
+                    if child and str(child.getTag()) == str(tag):
+                        return True
+                except:
+                    pass
+        except:
+            pass
+        return False
+
+    def _build_native_settings_entry(self, ctx, tag, show_hint=False):
+        from android.widget import LinearLayout, TextView
+        from android.view import Gravity
+        from android.graphics import Color, Typeface
+        from android.util import TypedValue
+
+        density = ctx.getResources().getDisplayMetrics().density
+        outer = LinearLayout(ctx)
+        outer.setOrientation(LinearLayout.VERTICAL)
+        try:
+            outer.setTag(tag)
+        except:
+            pass
+
+        row = LinearLayout(ctx)
+        row.setOrientation(LinearLayout.HORIZONTAL)
+        row.setGravity(Gravity.CENTER_VERTICAL)
+        row.setPadding(int(16 * density), int(12 * density), int(16 * density), int(12 * density))
+
+        badge = TextView(ctx)
+        badge.setText("V")
+        badge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13)
+        badge.setTypeface(Typeface.DEFAULT_BOLD)
+        badge.setPadding(int(10 * density), int(5 * density), int(10 * density), int(5 * density))
+        try:
+            badge.setTextColor(Color.WHITE)
+        except:
+            pass
+        try:
+            from android.graphics.drawable import GradientDrawable
+            bg = GradientDrawable()
+            bg.setShape(GradientDrawable.RECTANGLE)
+            bg.setColor(Color.parseColor("#3F8AE0"))
+            bg.setCornerRadius(float(10 * density))
+            badge.setBackground(bg)
+        except:
+            try:
+                badge.setBackgroundColor(Color.parseColor("#3F8AE0"))
+            except:
+                pass
+        row.addView(badge)
+
+        spacer = TextView(ctx)
+        spacer.setWidth(int(12 * density))
+        row.addView(spacer)
+
+        labels = LinearLayout(ctx)
+        labels.setOrientation(LinearLayout.VERTICAL)
+
+        title = TextView(ctx)
+        title.setText(Z("tg_settings_vless"))
+        title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16)
+        title.setTypeface(Typeface.DEFAULT_BOLD)
+        labels.addView(title)
+
+        subtitle = TextView(ctx)
+        subtitle.setText(Z("tg_settings_vless_desc"))
+        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13)
+        try:
+            subtitle.setTextColor(Color.parseColor("#8E8E93"))
+        except:
+            pass
+        labels.addView(subtitle)
+
+        try:
+            row.addView(labels, LinearLayout.LayoutParams(0, -2, 1.0))
+        except:
+            row.addView(labels)
+
+        arrow = TextView(ctx)
+        arrow.setText(">")
+        arrow.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15)
+        try:
+            arrow.setTextColor(Color.parseColor("#3F8AE0"))
+        except:
+            pass
+        row.addView(arrow)
+
+        def on_click(v):
+            try:
+                self._open_settings()
+            except:
+                pass
+
+        row.setOnClickListener(on_click)
+        row.setClickable(True)
+
+        try:
+            from android.R import attr as R_attr
+            ta = ctx.obtainStyledAttributes([R_attr.selectableItemBackground])
+            row.setBackgroundResource(ta.getResourceId(0, 0))
+            ta.recycle()
+        except:
+            pass
+
+        outer.addView(row)
+
+        if show_hint:
+            hint = TextView(ctx)
+            hint.setText(Z("proxy_hint"))
+            hint.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 12)
+            hint.setPadding(int(16 * density), 0, int(16 * density), int(12 * density))
+            try:
+                hint.setTextColor(Color.parseColor("#8E8E93"))
+            except:
+                pass
+            outer.addView(hint)
+
+        return outer
+
+    def _inject_settings_shortcut(self, result, tag, show_hint=False):
+        try:
+            from android.view import ViewGroup
+        except:
+            return
+
+        if result is None:
+            return
+
+        try:
+            frag = get_last_fragment()
+            ctx = frag.getParentActivity() if frag else ApplicationLoader.applicationContext
+        except:
+            ctx = ApplicationLoader.applicationContext
+
+        try:
+            if isinstance(result, ViewGroup):
+                if self._view_group_has_tag(result, tag):
+                    return
+                result.addView(self._build_native_settings_entry(ctx, tag, show_hint), 0)
+                return
+
+            parent = result.getParent() if hasattr(result, "getParent") else None
+            if parent and isinstance(parent, ViewGroup):
+                if self._view_group_has_tag(parent, tag):
+                    return
+                idx = -1
+                for i in range(parent.getChildCount()):
+                    if parent.getChildAt(i) == result:
+                        idx = i
+                        break
+                entry = self._build_native_settings_entry(ctx, tag, show_hint)
+                if idx >= 0:
+                    parent.addView(entry, idx + 1)
+                else:
+                    parent.addView(entry, 0)
+        except Exception as e:
+            _log(f"inject settings shortcut error: {e}")
+
+    def _plugin_value_matches(self, value):
+        try:
+            s = str(value or "").strip().lower()
+        except:
+            return False
+        if not s:
+            return False
+        if s in (str(self.id).lower(), str(__id__).lower(), str(__name__).lower()):
+            return True
+        return str(self.id).lower() in s
+
+    def _plugin_object_matches(self, obj, depth=0):
+        if obj is None or depth > 1:
+            return False
+
+        try:
+            if self._plugin_value_matches(obj):
+                return True
+        except:
+            pass
+
+        for attr in ("id", "pluginId", "plugin_id", "name", "slug", "shortName", "__id__"):
+            try:
+                if self._plugin_value_matches(getattr(obj, attr)):
+                    return True
+            except:
+                pass
+
+        for meth in ("getId", "getPluginId", "getName", "getSlug"):
+            try:
+                fn = getattr(obj, meth)
+                if callable(fn) and self._plugin_value_matches(fn()):
+                    return True
+            except:
+                pass
+
+        try:
+            cls = obj.getClass()
+            if cls:
+                for field in cls.getDeclaredFields():
+                    try:
+                        field.setAccessible(True)
+                        val = field.get(obj)
+                        if self._plugin_value_matches(val):
+                            return True
+                    except:
+                        pass
+        except:
+            pass
+
+        return False
+
+    def _is_our_plugin_settings_fragment(self, fragment):
+        if fragment is None:
+            return False
+
+        for field_name in ("plugin", "currentPlugin", "selectedPlugin", "pluginData", "mPlugin"):
+            try:
+                if self._plugin_object_matches(get_private_field(fragment, field_name), 0):
+                    return True
+            except:
+                pass
+
+        try:
+            args = fragment.getArguments()
+            if args:
+                for key in ("plugin", "plugin_id", "pluginId", "id", "slug", "name"):
+                    try:
+                        if self._plugin_value_matches(args.getString(key)):
+                            return True
+                    except:
+                        pass
+        except:
+            pass
+
+        try:
+            title = fragment.getTitle()
+            if self._plugin_value_matches(title):
+                return True
+        except:
+            pass
+
+        try:
+            cls = fragment.getClass()
+            if cls:
+                for field in cls.getDeclaredFields():
+                    try:
+                        field.setAccessible(True)
+                        val = field.get(fragment)
+                        if self._plugin_object_matches(val, 0):
+                            return True
+                    except:
+                        pass
+        except:
+            pass
+
+        return False
+
+    def _build_plugin_settings_card(self, ctx, tag):
+        from android.widget import LinearLayout, TextView
+        from android.view import Gravity
+        from android.graphics import Color, Typeface
+        from android.util import TypedValue
+
+        density = ctx.getResources().getDisplayMetrics().density
+
+        def _make_bg(fill, stroke=None, radius_dp=18):
+            try:
+                from android.graphics.drawable import GradientDrawable
+                bg = GradientDrawable()
+                bg.setShape(GradientDrawable.RECTANGLE)
+                bg.setColor(Color.parseColor(fill))
+                if stroke:
+                    bg.setStroke(max(1, int(density)), Color.parseColor(stroke))
+                bg.setCornerRadius(float(radius_dp * density))
+                return bg
+            except:
+                return None
+
+        def _gap(height_dp):
+            gap = TextView(ctx)
+            gap.setHeight(int(height_dp * density))
+            return gap
+
+        def _action_row(badge_text, title_text, subtitle_text, on_click, primary=False):
+            row = LinearLayout(ctx)
+            row.setOrientation(LinearLayout.HORIZONTAL)
+            row.setGravity(Gravity.CENTER_VERTICAL)
+            row.setPadding(int(16 * density), int((16 if primary else 12) * density), int(16 * density), int((16 if primary else 12) * density))
+            try:
+                row.setBackground(_make_bg("#3F8AE0" if primary else "#FFFFFF", "#D7E6FF" if not primary else None, 14))
+            except:
+                pass
+
+            badge = TextView(ctx)
+            badge.setText(badge_text)
+            badge.setTypeface(Typeface.DEFAULT_BOLD)
+            badge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13 if primary else 12)
+            badge.setPadding(int((10 if primary else 8) * density), int((6 if primary else 5) * density), int((10 if primary else 8) * density), int((6 if primary else 5) * density))
+            try:
+                badge.setTextColor(Color.parseColor("#3F8AE0") if primary else Color.WHITE)
+            except:
+                pass
+            try:
+                badge.setBackground(_make_bg("#FFFFFF" if primary else "#3F8AE0", None, 10))
+            except:
+                pass
+            row.addView(badge)
+
+            spacer = TextView(ctx)
+            spacer.setWidth(int(12 * density))
+            row.addView(spacer)
+
+            labels = LinearLayout(ctx)
+            labels.setOrientation(LinearLayout.VERTICAL)
+
+            title = TextView(ctx)
+            title.setText(title_text)
+            title.setTypeface(Typeface.DEFAULT_BOLD)
+            title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17 if primary else 15)
+            try:
+                title.setTextColor(Color.WHITE if primary else Color.parseColor("#202124"))
+            except:
+                pass
+            labels.addView(title)
+
+            subtitle = TextView(ctx)
+            subtitle.setText(subtitle_text)
+            subtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13 if primary else 12)
+            try:
+                subtitle.setTextColor(Color.parseColor("#DCEBFF") if primary else Color.parseColor("#7C7F85"))
+            except:
+                pass
+            labels.addView(subtitle)
+
+            try:
+                row.addView(labels, LinearLayout.LayoutParams(0, -2, 1.0))
+            except:
+                row.addView(labels)
+
+            if not primary:
+                arrow = TextView(ctx)
+                arrow.setText(">")
+                arrow.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15)
+                try:
+                    arrow.setTextColor(Color.parseColor("#3F8AE0"))
+                except:
+                    pass
+                row.addView(arrow)
+
+            row.setClickable(True)
+            row.setOnClickListener(lambda v: on_click())
+            return row
+
+        outer = LinearLayout(ctx)
+        outer.setOrientation(LinearLayout.VERTICAL)
+        outer.setPadding(int(16 * density), int(10 * density), int(16 * density), int(6 * density))
+        try:
+            outer.setTag(tag)
+        except:
+            pass
+
+        card = LinearLayout(ctx)
+        card.setOrientation(LinearLayout.VERTICAL)
+        card.setPadding(int(16 * density), int(16 * density), int(16 * density), int(16 * density))
+        try:
+            card.setBackground(_make_bg("#F4F8FF", "#D7E6FF", 20))
+        except:
+            pass
+
+        badge = TextView(ctx)
+        badge.setText("VLESS")
+        badge.setTypeface(Typeface.DEFAULT_BOLD)
+        badge.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 11)
+        badge.setPadding(int(8 * density), int(4 * density), int(8 * density), int(4 * density))
+        try:
+            badge.setTextColor(Color.parseColor("#3F8AE0"))
+            badge.setBackground(_make_bg("#E7F0FF", None, 10))
+        except:
+            pass
+        card.addView(badge)
+        card.addView(_gap(10))
+
+        title = TextView(ctx)
+        title.setText(Z("vless_quick_actions"))
+        title.setTypeface(Typeface.DEFAULT_BOLD)
+        title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18)
+        try:
+            title.setTextColor(Color.parseColor("#202124"))
+        except:
+            pass
+        card.addView(title)
+
+        subtitle = TextView(ctx)
+        subtitle.setText(Z("vless_quick_desc"))
+        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 13)
+        subtitle.setPadding(0, int(6 * density), 0, int(14 * density))
+        try:
+            subtitle.setTextColor(Color.parseColor("#667085"))
+        except:
+            pass
+        card.addView(subtitle)
+
+        card.addView(_action_row("V", Z("vless_add_key"), Z("vless_paste_hint"), lambda: self._paste_vless_from_clipboard(), True))
+        card.addView(_gap(10))
+        card.addView(_action_row("TG", Z("open_tg_settings"), Z("vless_proxy_short_hint"), lambda: self._open_tg_proxy_settings(), False))
+        card.addView(_gap(10))
+        card.addView(_action_row("BOT", Z("zapretvpns_btn"), Z("zapretvpns_btn_desc"), lambda: self._open_tg_link(ZAPRETVPNS_BOT), False))
+        card.addView(_gap(10))
+        card.addView(_action_row("@", Z("zapretvpns_open_btn"), Z("zapretvpns_open_desc"), lambda: self._open_tg_link(ZAPRETVPNS_BOT), False))
+
+        outer.addView(card)
+        return outer
+
+    def _inject_plugin_settings_card(self, fragment, result):
+        try:
+            from android.view import ViewGroup
+        except:
+            return
+
+        if result is None or not self._is_our_plugin_settings_fragment(fragment):
+            return
+
+        try:
+            ctx = fragment.getParentActivity()
+        except:
+            ctx = None
+        if not ctx:
+            try:
+                frag = get_last_fragment()
+                ctx = frag.getParentActivity() if frag else ApplicationLoader.applicationContext
+            except:
+                ctx = ApplicationLoader.applicationContext
+
+        inserted = False
+        try:
+            if isinstance(result, ViewGroup):
+                if not self._view_group_has_tag(result, PLUGIN_SETTINGS_CARD_TAG):
+                    result.addView(self._build_plugin_settings_card(ctx, PLUGIN_SETTINGS_CARD_TAG), 0)
+                    inserted = True
+            else:
+                parent = result.getParent() if hasattr(result, "getParent") else None
+                if parent and isinstance(parent, ViewGroup) and not self._view_group_has_tag(parent, PLUGIN_SETTINGS_CARD_TAG):
+                    entry = self._build_plugin_settings_card(ctx, PLUGIN_SETTINGS_CARD_TAG)
+                    idx = -1
+                    for i in range(parent.getChildCount()):
+                        if parent.getChildAt(i) == result:
+                            idx = i
+                            break
+                    if idx >= 0:
+                        parent.addView(entry, idx)
+                    else:
+                        parent.addView(entry, 0)
+                    inserted = True
+        except Exception as e:
+            _log(f"inject plugin settings card error: {e}")
+            return
+
+        try:
+            if inserted and not getattr(self, "_plugin_settings_card_ready", False):
+                self._plugin_settings_card_ready = True
+                self._reload_settings_ui()
+        except:
+            pass
+
+    def _install_settings_hooks(self):
+        plugin_ref = self
+
+        # Hook into Telegram main settings (ProfileActivity / SettingsActivity)
+        try:
+            class _SettingsCreateViewHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        result = param.getResult()
+                        plugin_ref._inject_settings_shortcut(result, MAIN_SETTINGS_ENTRY_TAG, False)
+                    except:
+                        pass
+
+            for cls_name in ("org.telegram.ui.ProfileActivity", "org.telegram.ui.SettingsActivity"):
+                SettingsActivity = find_class(cls_name)
+                if SettingsActivity:
+                    for m in SettingsActivity.getDeclaredMethods():
+                        if m.getName() == "createView" and len(m.getParameterTypes()) == 1:
+                            self.hook_method(m, _SettingsCreateViewHook())
+                            _log(f"settings hook installed: {cls_name}.createView")
+                            break
+        except Exception as e:
+            _log(f"settings hook install error: {e}")
+
+        # Hook into ProxyListActivity (proxy settings)
+        try:
+            class _ProxyListCreateViewHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        result = param.getResult()
+                        plugin_ref._inject_settings_shortcut(result, PROXY_SETTINGS_ENTRY_TAG, True)
+                    except:
+                        pass
+
+            ProxyListActivity = find_class("org.telegram.ui.ProxyListActivity")
+            if ProxyListActivity:
+                for m in ProxyListActivity.getDeclaredMethods():
+                    if m.getName() == "createView" and len(m.getParameterTypes()) == 1:
+                        self.hook_method(m, _ProxyListCreateViewHook())
+                        _log("settings hook installed: ProxyListActivity.createView")
+                        break
+        except Exception as e:
+            _log(f"proxy list hook install error: {e}")
+
+        try:
+            class _PluginSettingsCreateViewHook(MethodHook):
+                def after_hooked_method(self, param):
+                    try:
+                        result = param.getResult()
+                        try:
+                            fragment = param.thisObject
+                        except:
+                            fragment = getattr(param, "thisObject", None)
+                        plugin_ref._inject_plugin_settings_card(fragment, result)
+                    except:
+                        pass
+
+            PluginSettingsActivity = find_class("com.exteragram.messenger.plugins.ui.PluginSettingsActivity")
+            if PluginSettingsActivity:
+                for m in PluginSettingsActivity.getDeclaredMethods():
+                    if m.getName() == "createView" and len(m.getParameterTypes()) == 1:
+                        self.hook_method(m, _PluginSettingsCreateViewHook())
+                        _log("settings hook installed: PluginSettingsActivity.createView")
+                        break
+        except Exception as e:
+            _log(f"plugin settings hook install error: {e}")
 
     def _remove_menu_items(self):
         try:
@@ -1427,16 +2322,26 @@ class zapretkvnPlugin(BasePlugin):
             _log_exc("on_enabled_changed crash")
 
     def _on_vless_custom_key_input(self, v):
-        uri = _sanitize_vless_uri(v)
+        text = str(v or "")
+        uris = _extract_proxy_uris(text)
+        if len(uris) > 1:
+            key = "\n".join(uris)
+            if key != self._last_custom_key_applied:
+                self._last_custom_key_applied = key
+                self._apply_vless_custom_keys(uris)
+            return
+        uri = _sanitize_vless_uri(text)
         self._vless_custom_key_buf = uri
-        if uri.startswith("vless://") and "@" in uri and uri != self._last_custom_key_applied:
+        is_vmess = uri.startswith("vmess://") and len(uri) > 15
+        is_std = _is_proxy_uri(uri) and "@" in uri
+        if (is_vmess or is_std) and uri != self._last_custom_key_applied:
             self._last_custom_key_applied = uri
             self._apply_vless_custom_key()
 
     def _apply_vless_custom_key(self):
         uri = _sanitize_vless_uri(getattr(self, "_vless_custom_key_buf", ""))
-        if not uri.startswith("vless://") or len(uri) < 20:
-            run_on_ui_thread(lambda: BulletinHelper.show_error("Неверный vless:// ключ")); return
+        if not _is_proxy_uri(uri) or len(uri) < 15:
+            run_on_ui_thread(lambda: BulletinHelper.show_error("Неверный ключ (vless/vmess/trojan/ss)")); return
         conf, name = VlessConfigParser.parse(uri, 1080)
         if not conf:
             run_on_ui_thread(lambda: BulletinHelper.show_error("Ошибка парсинга ключа")); return
@@ -1451,11 +2356,48 @@ class zapretkvnPlugin(BasePlugin):
             self.set_setting("vless_custom_key", "", reload_settings=False)
         except:
             pass
+        self._vless_custom_key_buf = ""
+        self._last_custom_key_applied = ""
         try:
             self.set_setting("vless_enabled", True, reload_settings=True)
         except:
             pass
         run_on_ui_thread(lambda: BulletinHelper.show_success(Z("key_added")))
+        threading.Thread(target=self._vless_connect, daemon=True).start()
+        run_on_ui_thread(self._reload_settings_ui)
+
+    def _apply_vless_custom_keys(self, uris):
+        if not uris:
+            return
+        manual = self._vless_data.get("manual", [])
+        added = 0
+        last_uri = None
+        for uri in uris:
+            uri = _sanitize_vless_uri(uri)
+            if not _is_proxy_uri(uri) or len(uri) < 15:
+                continue
+            conf, name = VlessConfigParser.parse(uri, 1080)
+            if not conf:
+                continue
+            if not any(n["uri"] == uri for n in manual):
+                manual.append({"name": name, "uri": uri, "ping": -1})
+                added += 1
+            last_uri = uri
+        if added == 0 and last_uri is None:
+            run_on_ui_thread(lambda: BulletinHelper.show_error("Неверный ключ (vless/vmess/trojan/ss)"))
+            return
+        self._vless_data["manual"] = manual
+        self._vless_active_uri = last_uri
+        self._vless_save_data()
+        self._ping_event.set()
+        self._vless_custom_key_buf = ""
+        self._last_custom_key_applied = ""
+        try:
+            self.set_setting("vless_enabled", True, reload_settings=True)
+        except:
+            pass
+        msg = Z("key_added") if added <= 1 else Z("keys_added").format(count=added)
+        run_on_ui_thread(lambda: BulletinHelper.show_success(msg))
         threading.Thread(target=self._vless_connect, daemon=True).start()
         run_on_ui_thread(self._reload_settings_ui)
 
@@ -1911,7 +2853,13 @@ class zapretkvnPlugin(BasePlugin):
         except Exception as e:
             _log(f"rename node error: {e}")
 
-    def _show_clipboard_add_dialog(self, uri):
+    def _show_clipboard_add_dialog(self, uris_or_uri):
+        if isinstance(uris_or_uri, str):
+            uris = [uris_or_uri]
+        else:
+            uris = list(uris_or_uri or [])
+        if not uris:
+            return
         def _do():
             try:
                 frag = get_last_fragment()
@@ -1919,20 +2867,35 @@ class zapretkvnPlugin(BasePlugin):
                 if not act:
                     return
 
-                _, name = VlessConfigParser.parse(uri, 1080)
-                if not name:
-                    name = Z("vless_node_default")
-                short = uri[:60] + "..." if len(uri) > 60 else uri
+                if len(uris) == 1:
+                    _, name = VlessConfigParser.parse(uris[0], 1080)
+                    if not name:
+                        name = Z("vless_node_default")
+                    short = uris[0][:60] + "..." if len(uris[0]) > 60 else uris[0]
+                    msg = f"{name}\n\n{short}"
+                    title = Z("clipboard_found")
+                else:
+                    title = Z("clipboard_found_multi").format(count=len(uris))
+                    lines = []
+                    for u in uris[:10]:
+                        _, n = VlessConfigParser.parse(u, 1080)
+                        lines.append(n or Z("vless_node_default"))
+                    msg = "\n".join(lines)
+                    if len(uris) > 10:
+                        msg += f"\n...и ещё {len(uris) - 10}"
 
                 def do_add(d, w):
                     d.dismiss()
-                    self._vless_custom_key_buf = uri
-                    self._last_custom_key_applied = uri
-                    self._apply_vless_custom_key()
+                    if len(uris) == 1:
+                        self._vless_custom_key_buf = uris[0]
+                        self._last_custom_key_applied = uris[0]
+                        self._apply_vless_custom_key()
+                    else:
+                        self._apply_vless_custom_keys(uris)
 
                 b = AlertDialogBuilder(act)
-                b.set_title(Z("clipboard_found"))
-                b.set_message(f"{name}\n\n{short}")
+                b.set_title(title)
+                b.set_message(msg)
                 b.set_positive_button(Z("btn_add"), do_add)
                 b.set_negative_button(Z("btn_cancel"), lambda d, w: d.dismiss())
                 b.show()
@@ -2044,6 +3007,81 @@ class zapretkvnPlugin(BasePlugin):
             self._vless_save_data()
             self._ping_event.set()
             run_on_ui_thread(self._reload_settings_ui)
+
+    def _health_check_loop(self):
+        while not self._health_stop.is_set():
+            self._health_stop.wait(HEALTH_CHECK_INTERVAL_SEC)
+            if self._health_stop.is_set():
+                break
+            try:
+                if not self.get_setting("auto_switch_enabled", False):
+                    self._health_fail_count = 0
+                    continue
+                if not self.get_setting("vless_enabled", False):
+                    self._health_fail_count = 0
+                    continue
+                if not self._vless_running:
+                    self._health_fail_count = 0
+                    continue
+                port = self._vless_port
+                if not port:
+                    continue
+                alive = self._check_proxy_alive(port)
+                if alive:
+                    self._health_fail_count = 0
+                    continue
+                self._health_fail_count += 1
+                _log(f"health_check: fail count={self._health_fail_count} port={port}")
+                if self._health_fail_count >= HEALTH_CHECK_FAIL_THRESHOLD:
+                    self._health_fail_count = 0
+                    self._auto_switch_to_best()
+            except:
+                _log_exc("health_check_loop error")
+
+    def _check_proxy_alive(self, port):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(3.0)
+                s.connect(('127.0.0.1', port))
+                s.sendall(b'\x05\x01\x00')
+                r = s.recv(2)
+                if len(r) != 2 or r[0] != 0x05:
+                    return False
+                s.sendall(b'\x05\x01\x00\x03' + bytes([len(b'api.telegram.org')]) + b'api.telegram.org' + b'\x01\xbb')
+                cr = s.recv(10)
+                return len(cr) >= 2 and cr[1] == 0x00
+        except:
+            return False
+
+    def _auto_switch_to_best(self):
+        try:
+            current_uri = self._vless_active_uri
+            all_nodes = list(self._vless_data.get("manual", []))
+            for sub in self._vless_data.get("subs", []):
+                all_nodes.extend(sub.get("nodes", []))
+            if len(all_nodes) < 2:
+                _log("auto_switch: not enough nodes to switch")
+                return
+            candidates = [n for n in all_nodes if n["uri"] != current_uri]
+            if not candidates:
+                _log("auto_switch: no candidates")
+                return
+            candidates.sort(key=lambda n: n.get("ping", 9999) if n.get("ping", -1) > 0 else 9999)
+            best = candidates[0]
+            best_ping = best.get("ping", -1)
+            if best_ping <= 0 or best_ping >= 9999:
+                _log("auto_switch: no reachable candidate")
+                return
+            _log(f"auto_switch: switching to {best['name']} ping={best_ping}ms")
+            self._vless_active_uri = best["uri"]
+            self._vless_save_data()
+            threading.Thread(target=self._vless_connect, daemon=True).start()
+            name = best.get("name", "")
+            msg = Z("auto_switch_notify").format(name=name)
+            run_on_ui_thread(lambda: BulletinHelper.show_success(msg))
+            run_on_ui_thread(self._reload_settings_ui)
+        except:
+            _log_exc("auto_switch error")
 
     def _vless_pinger_loop(self):
         while not self._ping_stop.is_set():
